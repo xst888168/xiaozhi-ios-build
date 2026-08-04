@@ -101,3 +101,6 @@ coverage/
 # Local configuration
 .env*
 !.env.example
+
+# 由 CI 重新解析，避免锁死过期 pod 版本
+ios/Podfile.lock

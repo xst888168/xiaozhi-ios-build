@@ -95,6 +95,7 @@ class ConfigProvider extends ChangeNotifier {
     String name,
     String websocketUrl, {
     String? customMacAddress,
+    String? token,
   }) async {
     // 如果提供了自定义MAC地址，直接使用；否则使用设备ID生成
     final macAddress = customMacAddress ?? await _getDeviceMacAddress();
@@ -104,7 +105,10 @@ class ConfigProvider extends ChangeNotifier {
       name: name,
       websocketUrl: websocketUrl,
       macAddress: macAddress,
-      token: 'test-token',
+      // 用户填写的 Token 优先；留空则回退默认值（多数自建服务端不校验）
+      token: (token != null && token.trim().isNotEmpty)
+          ? token.trim()
+          : 'test-token',
     );
 
     _xiaozhiConfigs.add(newConfig);

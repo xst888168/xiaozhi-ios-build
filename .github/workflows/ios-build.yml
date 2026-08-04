@@ -51,6 +51,10 @@ jobs:
       - name: Pod install
         run: |
           cd ios
+          # 清理可能过期的锁文件：仓库内 Podfile.lock 可能锁死旧版
+          # flutter_sound_core，与 pub 解析出的 flutter_sound 版本冲突。
+          rm -f Podfile.lock
+          rm -rf Pods
           pod install --repo-update
 
       - name: Build iOS (no codesign)
