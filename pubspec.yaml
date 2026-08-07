@@ -16,7 +16,7 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 # https://developer.apple.com/library/archive/documentation/General/Reference/InfoPlistKeyReference/Articles/CoreFoundationKeys.html
 # In Windows, build-name is used as the major, minor, and patch parts
 # of the product and file versions while build-number is used as the build suffix.
-version: 2.0.0+2
+version: 2.0.29+31
 
 environment:
   sdk: ^3.7.0
@@ -51,16 +51,16 @@ dependencies:
   # 音频处理相关库
   opus_flutter: ^3.0.3
   opus_dart: ^3.0.1
-  flutter_sound: ^9.26.0
   permission_handler: ^11.4.0
   path_provider: ^2.1.5
-  just_audio: ^0.9.36
   audio_session: ^0.1.18
   flutter_pcm_player: ^0.0.1
   record: ^5.2.1
   sherpa_onnx: ^1.13.4
   pinyin: ^3.3.0 # 国语：中文名 -> 带声调拼音
-  jyutping: ^0.1.2 # 粤语：中文名 -> Jyutping
+  # 视频通话：本地相机预览 + 端侧物体识别
+  camera: ^0.11.0
+  google_mlkit_object_detection: ^0.14.0
   flutter_launcher_icons: ^0.14.3
   flutter_displaymode: ^0.6.0
   flutter_staggered_grid_view: ^0.7.0
