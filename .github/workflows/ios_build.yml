@@ -77,15 +77,19 @@ jobs:
 
       - name: Package unsigned IPA
         run: |
-          cd build/ios/iphoneos
+          cd "${{ github.workspace }}/build/ios/iphoneos"
+          rm -rf Payload
           mkdir -p Payload
           cp -r Runner.app Payload/
-          zip -r "../../../小智AI-unsigned.ipa" Payload
-          ls -la ../../..
+          cd "${{ github.workspace }}"
+          mkdir -p build
+          zip -r "${{ github.workspace }}/build/小智AI-unsigned.ipa" Payload
+          echo "=== IPA 产物 ==="
+          ls -la "${{ github.workspace }}/build/小智AI-unsigned.ipa"
 
       - name: Upload IPA artifact
         uses: actions/upload-artifact@v4
         with:
           name: 小智AI-iOS-unsigned
-          path: build/小智AI-unsigned.ipa
+          path: ${{ github.workspace }}/build/小智AI-unsigned.ipa
           retention-days: 30
