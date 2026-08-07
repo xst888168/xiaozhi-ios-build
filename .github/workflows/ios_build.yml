@@ -93,3 +93,15 @@ jobs:
           name: 小智AI-iOS-unsigned
           path: ${{ github.workspace }}/build/小智AI-unsigned.ipa
           retention-days: 30
+
+      # 发布到 GitHub Release（tag: latest），用独立 CDN（非 Actions 制品存储），
+      # 下载走公开 URL，绕开 Actions 制品服务偶发的 401 问题。
+      - name: Publish IPA to GitHub Release (latest)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release delete latest --yes || true
+          gh release create latest "${{ github.workspace }}/build/小智AI-unsigned.ipa" \
+            --title "小智AI iOS 未签名 IPA（最新构建）" \
+            --notes "自动构建的未签名 IPA。用巨魔(TrollStore)侧载安装，支持 iOS 16.0–16.5。" \
+            || echo "release 发布失败（不影响主构建）"
