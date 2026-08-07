@@ -8,7 +8,6 @@ import 'package:ai_assistant/screens/settings_screen.dart';
 import 'package:ai_assistant/screens/conversation_type_screen.dart';
 import 'package:ai_assistant/widgets/conversation_tile.dart';
 import 'package:ai_assistant/widgets/slidable_delete_tile.dart';
-import 'package:ai_assistant/widgets/discovery_screen.dart';
 import 'package:flutter/rendering.dart';
 
 class HomeScreen extends StatefulWidget {
@@ -19,7 +18,6 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen> {
-  int _selectedIndex = 0;
   final FocusNode _searchFocusNode = FocusNode();
 
   @override
@@ -41,228 +39,99 @@ class _HomeScreenState extends State<HomeScreen> {
         extendBody: true,
         extendBodyBehindAppBar: true,
         backgroundColor: const Color(0xFFF8F9FA),
-        appBar:
-            _selectedIndex == 1
-                ? null
-                : AppBar(
-                  title: const Text(
-                    '消息',
-                    style: TextStyle(
-                      fontWeight: FontWeight.bold,
-                      fontSize: 28,
-                      color: Colors.black,
-                    ),
-                  ),
-                  elevation: 0,
-                  scrolledUnderElevation: 0,
-                  backgroundColor: const Color(0xFFF8F9FA),
-                  centerTitle: false,
-                  titleSpacing: 20,
-                  toolbarHeight: 65,
-                  actions: [
-                    Padding(
-                      padding: const EdgeInsets.only(right: 16),
-                      child: Material(
-                        color: Colors.transparent,
-                        borderRadius: BorderRadius.circular(12),
-                        child: InkWell(
-                          borderRadius: BorderRadius.circular(12),
-                          splashColor: Colors.grey.withOpacity(0.1),
-                          highlightColor: Colors.grey.withOpacity(0.1),
-                          onTap: () {
-                            Navigator.push(
-                              context,
-                              MaterialPageRoute(
-                                builder: (context) => const SettingsScreen(),
-                              ),
-                            );
-                          },
-                          child: Padding(
-                            padding: const EdgeInsets.all(12),
-                            child: Icon(
-                              Icons.settings,
-                              size: 26,
-                              color: Colors.grey.shade700,
-                              shadows: [
-                                Shadow(
-                                  color: Colors.black.withOpacity(0.1),
-                                  blurRadius: 0.5,
-                                  offset: const Offset(0, 0.5),
-                                ),
-                              ],
-                            ),
-                          ),
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-        body:
-            _selectedIndex == 1
-                ? const SafeArea(bottom: false, child: DiscoveryScreen())
-                : SafeArea(
-                  bottom: false,
-                  child: Column(
-                    children: [
-                      _buildSearchBar(),
-                      Expanded(child: _buildBody()),
-                    ],
-                  ),
-                ),
-        floatingActionButton:
-            _selectedIndex == 0
-                ? Container(
-                  decoration: BoxDecoration(
-                    borderRadius: BorderRadius.circular(30),
-                    boxShadow: [
-                      BoxShadow(
-                        color: Colors.black.withOpacity(0.2),
-                        blurRadius: 10,
-                        spreadRadius: 0,
-                        offset: const Offset(0, 4),
-                      ),
-                      BoxShadow(
-                        color: Colors.black.withOpacity(0.1),
-                        blurRadius: 20,
-                        spreadRadius: -2,
-                        offset: const Offset(0, 10),
-                      ),
-                    ],
-                  ),
-                  child: FloatingActionButton(
-                    onPressed: () {
-                      Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                          builder: (context) => const ConversationTypeScreen(),
-                        ),
-                      );
-                    },
-                    backgroundColor: Colors.black,
-                    child: const Icon(Icons.add, size: 30, color: Colors.white),
-                    elevation: 0,
-                    shape: const CircleBorder(),
-                  ),
-                )
-                : null,
-        bottomNavigationBar: ClipRRect(
-          borderRadius: const BorderRadius.only(
-            topLeft: Radius.circular(20),
-            topRight: Radius.circular(20),
+        appBar: AppBar(
+          title: const Text(
+            '消息',
+            style: TextStyle(
+              fontWeight: FontWeight.bold,
+              fontSize: 28,
+              color: Colors.black,
+            ),
           ),
-          child: Theme(
-            data: ThemeData(
-              splashColor: Colors.transparent,
-              highlightColor: Colors.transparent,
-            ),
-            child: Container(
-              decoration: BoxDecoration(
-                color: Colors.white,
-                boxShadow: [
-                  BoxShadow(
-                    color: Colors.black.withOpacity(0.08),
-                    blurRadius: 10,
-                    spreadRadius: 0,
-                    offset: const Offset(0, -3),
-                  ),
-                ],
-              ),
-              child: Padding(
-                padding: EdgeInsets.only(
-                  bottom: MediaQuery.of(context).padding.bottom / 2,
-                ),
-                child: BottomNavigationBar(
-                  currentIndex: _selectedIndex,
-                  onTap: (index) {
-                    setState(() {
-                      _selectedIndex = index;
-                    });
+          elevation: 0,
+          scrolledUnderElevation: 0,
+          backgroundColor: const Color(0xFFF8F9FA),
+          centerTitle: false,
+          titleSpacing: 20,
+          toolbarHeight: 65,
+          actions: [
+            Padding(
+              padding: const EdgeInsets.only(right: 16),
+              child: Material(
+                color: Colors.transparent,
+                borderRadius: BorderRadius.circular(12),
+                child: InkWell(
+                  borderRadius: BorderRadius.circular(12),
+                  splashColor: Colors.grey.withOpacity(0.1),
+                  highlightColor: Colors.grey.withOpacity(0.1),
+                  onTap: () {
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (context) => const SettingsScreen(),
+                      ),
+                    );
                   },
-                  selectedItemColor: Colors.black,
-                  unselectedItemColor: Colors.grey.shade600,
-                  showSelectedLabels: true,
-                  showUnselectedLabels: true,
-                  backgroundColor: Colors.white,
-                  elevation: 0,
-                  type: BottomNavigationBarType.fixed,
-                  selectedLabelStyle: const TextStyle(
-                    fontWeight: FontWeight.w600,
-                    fontSize: 12,
-                  ),
-                  unselectedLabelStyle: const TextStyle(
-                    fontWeight: FontWeight.w500,
-                    fontSize: 12,
-                  ),
-                  iconSize: 26,
-                  items: [
-                    BottomNavigationBarItem(
-                      icon: Material(
-                        color: Colors.transparent,
-                        child: Container(
-                          padding: const EdgeInsets.all(8),
-                          decoration: BoxDecoration(
-                            color:
-                                _selectedIndex == 0
-                                    ? Colors.grey.shade100
-                                    : Colors.transparent,
-                            borderRadius: BorderRadius.circular(12),
-                            boxShadow:
-                                _selectedIndex == 0
-                                    ? [
-                                      BoxShadow(
-                                        color: Colors.black.withOpacity(0.05),
-                                        blurRadius: 4,
-                                        spreadRadius: 0,
-                                        offset: const Offset(0, 2),
-                                      ),
-                                    ]
-                                    : null,
-                          ),
-                          child: Icon(
-                            _selectedIndex == 0
-                                ? Icons.chat_bubble
-                                : Icons.chat_bubble_outline,
-                          ),
+                  child: Padding(
+                    padding: const EdgeInsets.all(12),
+                    child: Icon(
+                      Icons.settings,
+                      size: 26,
+                      color: Colors.grey.shade700,
+                      shadows: [
+                        Shadow(
+                          color: Colors.black.withOpacity(0.1),
+                          blurRadius: 0.5,
+                          offset: const Offset(0, 0.5),
                         ),
-                      ),
-                      label: '消息',
+                      ],
                     ),
-                    BottomNavigationBarItem(
-                      icon: Material(
-                        color: Colors.transparent,
-                        child: Container(
-                          padding: const EdgeInsets.all(8),
-                          decoration: BoxDecoration(
-                            color:
-                                _selectedIndex == 1
-                                    ? Colors.grey.shade100
-                                    : Colors.transparent,
-                            borderRadius: BorderRadius.circular(12),
-                            boxShadow:
-                                _selectedIndex == 1
-                                    ? [
-                                      BoxShadow(
-                                        color: Colors.black.withOpacity(0.05),
-                                        blurRadius: 4,
-                                        spreadRadius: 0,
-                                        offset: const Offset(0, 2),
-                                      ),
-                                    ]
-                                    : null,
-                          ),
-                          child: Icon(
-                            _selectedIndex == 1
-                                ? Icons.search
-                                : Icons.search_outlined,
-                          ),
-                        ),
-                      ),
-                      label: '发现',
-                    ),
-                  ],
+                  ),
                 ),
               ),
             ),
+          ],
+        ),
+        body: SafeArea(
+          bottom: false,
+          child: Column(
+            children: [
+              _buildSearchBar(),
+              Expanded(child: _buildBody()),
+            ],
+          ),
+        ),
+        floatingActionButton: Container(
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(30),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withOpacity(0.2),
+                blurRadius: 10,
+                spreadRadius: 0,
+                offset: const Offset(0, 4),
+              ),
+              BoxShadow(
+                color: Colors.black.withOpacity(0.1),
+                blurRadius: 20,
+                spreadRadius: -2,
+                offset: const Offset(0, 10),
+              ),
+            ],
+          ),
+          child: FloatingActionButton(
+            onPressed: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (context) => const ConversationTypeScreen(),
+                ),
+              );
+            },
+            backgroundColor: Colors.black,
+            child: const Icon(Icons.add, size: 30, color: Colors.white),
+            elevation: 0,
+            shape: const CircleBorder(),
           ),
         ),
       ),
@@ -270,10 +139,6 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Widget _buildSearchBar() {
-    if (_selectedIndex == 1) {
-      return const SizedBox.shrink();
-    }
-
     return Container(
       margin: const EdgeInsets.fromLTRB(20, 16, 20, 16),
       decoration: BoxDecoration(
@@ -507,7 +372,7 @@ class _HomeScreenState extends State<HomeScreen> {
             backgroundColor: Colors.grey.shade800,
             behavior: SnackBarBehavior.floating,
             duration: const Duration(seconds: 3),
-            margin: EdgeInsets.only(bottom: 70, left: 20, right: 20),
+            margin: const EdgeInsets.only(bottom: 70, left: 20, right: 20),
             shape: RoundedRectangleBorder(
               borderRadius: BorderRadius.circular(10),
             ),
