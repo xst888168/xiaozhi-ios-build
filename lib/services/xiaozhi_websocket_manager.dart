@@ -196,15 +196,20 @@ class XiaozhiWebSocketManager {
 
       // 等待 WebSocket 真正握手成功后再上报 connected，避免“假连接”
       try {
-        await _channel!.ready;
+        // iOS 等平台偶发握手既不成功也不回调，加 15s 超时兜底，
+        // 避免上层（语音通话准备）无限“正在准备…”。
+        await _channel!.ready.timeout(
+          const Duration(seconds: 15),
+          onTimeout: () => throw TimeoutException('WebSocket 握手超时(15s)'),
+        );
       } catch (e) {
-        print('$TAG: WebSocket 握手失败: $e');
+        print('$TAG: WebSocket 握手失败/超时: $e');
         _dispatchEvent(
           XiaozhiEvent(type: XiaozhiEventType.error, data: 'WebSocket 握手失败: $e'),
         );
         // 握手失败也要继续重连，而不是放弃（否则会永远断线）
         _scheduleReconnect();
-        return;
+        rethrow; // 让上层（通话准备）感知并提示“准备失败”，而非无限转圈
       }
 
       // 握手成功：只有此刻才认为"已连接"

@@ -108,6 +108,8 @@ class XiaozhiService {
     // 如果已经在语音通话模式，直接返回
     if (_isVoiceCallActive) return;
 
+    AudioUtil.callMode = true; // 通话播放走听筒（playAndRecord/voiceChat）
+
     try {
       print('$TAG: 正在切换到语音通话模式');
 
@@ -128,6 +130,8 @@ class XiaozhiService {
   Future<void> switchToChatMode() async {
     // 如果已经在普通聊天模式，直接返回
     if (!_isVoiceCallActive) return;
+
+    AudioUtil.callMode = false; // 切回聊天：播放走扬声器
 
     try {
       print('$TAG: 正在切换到普通聊天模式');

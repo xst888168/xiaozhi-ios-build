@@ -253,6 +253,10 @@ class AudioUtil {
     print('$TAG: 录音器初始化成功');
   }
 
+  /// 通话模式标志：true 时播放保持 playAndRecord（听筒路由），false 时走扬声器。
+  static bool _callMode = false;
+  static set callMode(bool v) => _callMode = v;
+
   /// 初始化音频播放器
   static Future<void> initPlayer() async {
     // 确保任何旧播放器被释放
@@ -260,6 +264,24 @@ class AudioUtil {
 
     try {
       print('$TAG: 使用简单方式初始化PCM播放器');
+
+      // iOS 必须显式配置并激活音频会话，否则 RawSoundPlayer(AVAudioEngine)
+      // 没有正确的 category/输出路由，会完全无声或仅路由到听筒（"对话没声音"）。
+      if (Platform.isIOS) {
+        final session = await AudioSession.instance;
+        if (_callMode) {
+          // 通话模式：录音器已配好 playAndRecord+voiceChat（听筒路由），
+          // 这里仅确保会话激活，不改动 category。
+          await session.setActive(true);
+        } else {
+          // 聊天/播报模式：显式走扬声器，确保用户能听到小智说话。
+          await session.configure(const AudioSessionConfiguration(
+            avAudioSessionCategory: AVAudioSessionCategory.playback,
+            avAudioSessionCategoryOptions: AVAudioSessionCategoryOptions.defaultToSpeaker,
+          ));
+          await session.setActive(true);
+        }
+      }
 
       // 创建新的播放器实例 - 完全按照官方示例的简单方式
       _pcmPlayer = FlutterPcmPlayer();
