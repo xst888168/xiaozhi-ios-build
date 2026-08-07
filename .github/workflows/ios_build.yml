@@ -77,13 +77,14 @@ jobs:
 
       - name: Package unsigned IPA
         run: |
-          cd "${{ github.workspace }}/build/ios/iphoneos"
-          rm -rf Payload
-          mkdir -p Payload
-          cp -r Runner.app Payload/
-          cd "${{ github.workspace }}"
-          mkdir -p build
-          zip -r "${{ github.workspace }}/build/小智AI-unsigned.ipa" Payload
+          set -e
+          APP_DIR="${{ github.workspace }}/build/ios/iphoneos"
+          rm -rf "$APP_DIR/Payload"
+          mkdir -p "$APP_DIR/Payload"
+          cp -r "$APP_DIR/Runner.app" "$APP_DIR/Payload/"
+          echo "=== Payload 内容 ==="
+          ls -la "$APP_DIR/Payload"
+          zip -r "${{ github.workspace }}/build/小智AI-unsigned.ipa" -C "$APP_DIR" Payload
           echo "=== IPA 产物 ==="
           ls -la "${{ github.workspace }}/build/小智AI-unsigned.ipa"
 
