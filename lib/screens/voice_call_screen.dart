@@ -50,8 +50,9 @@ class _VoiceCallScreenState extends State<VoiceCallScreen>
   // 全双工（可打断）相关：小智讲话期间检测用户插话并打断它。
   Timer? _bargeInTimer; // 插话检测轮询定时器（每 60ms）
   int _bargeInAboveMs = 0; // 去回声后的用户语音持续高于阈值的累计时长
-  static const double _bargeInEchoCoupling = 1.2; // 回声耦合系数（真机调参）
+  static const double _bargeInEchoCoupling = 2.5; // iOS 扬声器→麦克风回声耦合高，取保守值避免自打扰
   static const double _bargeInUserThreshold = 900.0; // 去回声后用户语音 RMS 阈值（越低越易打断）
+  static const double _bargeInPlayFloor = 200.0; // 外放活跃阈值：外放音量高于此值时麦克风必录到回声，暂停插话检测
   static const int _bargeInSustainMs = 180; // 持续该时长才判定插话，防误触
 
   // 视频模式相关
@@ -474,9 +475,25 @@ class _VoiceCallScreenState extends State<VoiceCallScreen>
     _bargeInTimer = Timer.periodic(const Duration(milliseconds: 60), (_) {
       if (!mounted || !_isAssistantSpeaking) return;
       final micRms = AudioUtil.currentRms;
-      final echo = AudioUtil.playbackLevel * _bargeInEchoCoupling;
+      final playRms = AudioUtil.playbackLevel;
+      // 关键修复（语音通话「秒跳」根因）：小智正在外放时，麦克风必然录到扬声器
+      // 回声，无法可靠区分人声/回声。只要外放音量仍活跃（> _bargeInPlayFloor），
+      // 直接忽略麦克风、不累计插话，避免「小智自己的声音」被当成用户插话而反复打断，
+      // 形成「听我讲↔小智讲」秒级来回跳。外放一停（playRms 回落）才重新开放插话检测。
+      if (playRms > _bargeInPlayFloor) {
+        _bargeInAboveMs = 0;
+        return;
+      }
+      // 用「当前外放音量 × 耦合系数」估计回声，从麦克风 RMS 中扣除；
+      // 耦合系数取保守值(2.5)，宁可少打断也不要误打断。
+      final echo = playRms * _bargeInEchoCoupling;
       final cleaned = micRms - echo;
-      if (cleaned > _bargeInUserThreshold) {
+      // 自适应用户阈值：取固定阈值与「环境噪声自适应阈值」的较大者，
+      // 确保环境噪声（空调/风扇/底噪）不算作人声，只有真正超过噪声的人声才打断。
+      final double userThresh = _bargeInUserThreshold < AudioUtil.effectiveSilenceThreshold
+          ? AudioUtil.effectiveSilenceThreshold * 1.5
+          : _bargeInUserThreshold;
+      if (cleaned > userThresh) {
         _bargeInAboveMs += 60;
       } else {
         _bargeInAboveMs = 0;
