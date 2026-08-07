@@ -14,6 +14,7 @@ class ConfigProvider extends ChangeNotifier {
   List<DifyConfig> _difyConfigs = [];
   List<MiniMaxConfig> _minimaxConfigs = [];
   bool _isLoaded = false;
+  String _clientId = '';
 
   List<XiaozhiConfig> get xiaozhiConfigs => _xiaozhiConfigs;
   List<DifyConfig> get difyConfigs => _difyConfigs;
@@ -21,6 +22,13 @@ class ConfigProvider extends ChangeNotifier {
   DifyConfig? get difyConfig =>
       _difyConfigs.isNotEmpty ? _difyConfigs.first : null;
   bool get isLoaded => _isLoaded;
+  String get clientId => _clientId;
+
+  /// 当前默认小智配置（取第一个；不存在则返回 null，表示尚未激活）
+  XiaozhiConfig? get defaultXiaozhiConfig {
+    if (_xiaozhiConfigs.isEmpty) return null;
+    return _xiaozhiConfigs.first;
+  }
 
   ConfigProvider() {
     _loadConfigs();
@@ -35,6 +43,35 @@ class ConfigProvider extends ChangeNotifier {
         xiaozhiConfigsJson
             .map((json) => XiaozhiConfig.fromJson(jsonDecode(json)))
             .toList();
+
+    // 读取或生成客户端 ID（UUID，用于 OTA 与 WebSocket 握手）
+    _clientId = prefs.getString('xiaozhiClientId') ?? '';
+    if (_clientId.isEmpty) {
+      _clientId = const Uuid().v4();
+      await prefs.setString('xiaozhiClientId', _clientId);
+    }
+
+    // 首次安装：保持 _xiaozhiConfigs 为空，不要自动创建并持久化默认配置。
+    // 这样新装 App 不会一打开就显示“已配置”，用户必须点「获取配置」走激活流程，
+    // 服务器返回 websocket/token 后才会真正保存配置。
+    if (_xiaozhiConfigs.isNotEmpty) {
+      // 兼容旧配置：补全 clientId/otaUrl/protocolVersion
+      bool needSave = false;
+      for (int i = 0; i < _xiaozhiConfigs.length; i++) {
+        final cfg = _xiaozhiConfigs[i];
+        if (cfg.clientId.isEmpty || cfg.otaUrl.isEmpty) {
+          _xiaozhiConfigs[i] = cfg.copyWith(
+            clientId: cfg.clientId.isEmpty ? _clientId : cfg.clientId,
+            otaUrl: cfg.otaUrl.isEmpty ? XiaozhiConfig.defaultOtaUrl : cfg.otaUrl,
+            protocolVersion: cfg.protocolVersion == 0
+                ? XiaozhiConfig.defaultProtocolVersion
+                : cfg.protocolVersion,
+          );
+          needSave = true;
+        }
+      }
+      if (needSave) await _saveConfigs();
+    }
 
     // 加载多个Dify配置
     final difyConfigsJson = prefs.getStringList('difyConfigs') ?? [];
@@ -96,6 +133,9 @@ class ConfigProvider extends ChangeNotifier {
     String websocketUrl, {
     String? customMacAddress,
     String? token,
+    String? clientId,
+    String? otaUrl,
+    int? protocolVersion,
   }) async {
     // 如果提供了自定义MAC地址，直接使用；否则使用设备ID生成
     final macAddress = customMacAddress ?? await _getDeviceMacAddress();
@@ -103,15 +143,94 @@ class ConfigProvider extends ChangeNotifier {
     final newConfig = XiaozhiConfig(
       id: DateTime.now().millisecondsSinceEpoch.toString(),
       name: name,
-      websocketUrl: websocketUrl,
+      websocketUrl: websocketUrl.isNotEmpty
+          ? websocketUrl
+          : XiaozhiConfig.defaultWebsocketUrl,
       macAddress: macAddress,
-      // 用户填写的 Token 优先；留空则回退默认值（多数自建服务端不校验）
+      // 用户填写的 Token 优先；留空则回退官方默认值
       token: (token != null && token.trim().isNotEmpty)
           ? token.trim()
-          : 'test-token',
+          : XiaozhiConfig.defaultToken,
+      clientId: clientId ?? _clientId,
+      otaUrl: otaUrl ?? XiaozhiConfig.defaultOtaUrl,
+      protocolVersion: protocolVersion ?? XiaozhiConfig.defaultProtocolVersion,
     );
 
     _xiaozhiConfigs.add(newConfig);
+    await _saveConfigs();
+    notifyListeners();
+  }
+
+  /// 创建一个未激活的默认配置（不保存，仅用于展示或按需持久化）
+  XiaozhiConfig createDefaultXiaozhiConfig({String? macAddress}) {
+    final mac = macAddress ?? _generateMacFromDeviceId(_clientId);
+    return XiaozhiConfig(
+      id: const Uuid().v4(),
+      name: '小智官方',
+      websocketUrl: XiaozhiConfig.defaultWebsocketUrl,
+      macAddress: mac,
+      token: XiaozhiConfig.defaultToken,
+      clientId: _clientId,
+      otaUrl: XiaozhiConfig.defaultOtaUrl,
+      protocolVersion: XiaozhiConfig.defaultProtocolVersion,
+    );
+  }
+
+  /// 确保至少存在一条小智官方默认配置（未激活状态，URL/token 为空）。
+  /// 仅在用户主动点「获取配置」时调用，避免首次启动就持久化默认配置。
+  Future<XiaozhiConfig> ensureDefaultXiaozhiConfig() async {
+    if (_xiaozhiConfigs.isNotEmpty) return _xiaozhiConfigs.first;
+
+    final config = createDefaultXiaozhiConfig();
+    _xiaozhiConfigs.add(config);
+    await _saveConfigs();
+    notifyListeners();
+    return config;
+  }
+
+  /// 重新生成设备身份：新 clientId + 新 MAC，并保存。用于服务器已把当前设备视为
+  /// “已绑定”不再发激活码时，让服务器认为是全新设备，重新下发激活码。
+  Future<XiaozhiConfig?> regenerateDeviceIdentity() async {
+    if (_xiaozhiConfigs.isEmpty) return null;
+
+    final prefs = await SharedPreferences.getInstance();
+
+    // 新生成全局 clientId
+    _clientId = const Uuid().v4();
+    await prefs.setString('xiaozhiClientId', _clientId);
+
+    // 基于新 clientId 生成新 MAC
+    final newMac = _generateMacFromDeviceId(_clientId);
+
+    final first = _xiaozhiConfigs.first;
+    _xiaozhiConfigs[0] = first.copyWith(
+      clientId: _clientId,
+      macAddress: newMac,
+      websocketUrl: XiaozhiConfig.defaultWebsocketUrl,
+      token: XiaozhiConfig.defaultToken,
+    );
+    await _saveConfigs();
+    notifyListeners();
+    return _xiaozhiConfigs.first;
+  }
+
+  /// 用 OTA 结果更新默认小智配置
+  Future<void> updateDefaultXiaozhiFromOta({
+    String? websocketUrl,
+    String? token,
+    String? otaUrl,
+  }) async {
+    if (_xiaozhiConfigs.isEmpty) return;
+
+    final config = _xiaozhiConfigs.first;
+    _xiaozhiConfigs[0] = config.copyWith(
+      websocketUrl: (websocketUrl != null && websocketUrl.isNotEmpty)
+          ? websocketUrl
+          : config.websocketUrl,
+      token: (token != null && token.isNotEmpty) ? token : config.token,
+      otaUrl: (otaUrl != null && otaUrl.isNotEmpty) ? otaUrl : config.otaUrl,
+      clientId: config.clientId.isEmpty ? _clientId : config.clientId,
+    );
     await _saveConfigs();
     notifyListeners();
   }
