@@ -257,6 +257,47 @@ class AudioUtil {
   static bool _callMode = false;
   static set callMode(bool v) => _callMode = v;
 
+  /// iOS 专用：把音频会话切到「播放」路由。
+  /// - 聊天/播报(_callMode=false)：playback + defaultToSpeaker → 扬声器，确保听得到小智。
+  /// - 通话(_callMode=true)：playAndRecord(听筒) 由录音器配好，这里仅激活。
+  /// 必须在「每次开始播放 TTS」前调用：聊天里用户录音会把会话切成 playAndRecord(听筒)，
+  /// 若不切回 playback，TTS 就会走听筒 → 表现为"小智回应了但没外放声音"。
+  static Future<void> _configureIosSession() async {
+    if (!Platform.isIOS) return;
+    try {
+      final session = await AudioSession.instance;
+      if (_callMode) {
+        await session.setActive(true);
+      } else {
+        await session.configure(const AudioSessionConfiguration(
+          avAudioSessionCategory: AVAudioSessionCategory.playback,
+          avAudioSessionCategoryOptions: AVAudioSessionCategoryOptions.defaultToSpeaker,
+        ));
+        await session.setActive(true);
+      }
+    } catch (e) {
+      print('$TAG: iOS 音频会话配置失败(播放): $e');
+    }
+  }
+
+  /// iOS 专用：把音频会话切回「录音」路由(playAndRecord + voiceChat)。
+  /// 在 startRecording 时调用，确保上一轮 TTS 把会话切成 playback 后，
+  /// 新一轮录音能正确回到录音模式（否则可能出现录不到音 / 一直准备）。
+  static Future<void> _configureIosRecordSession() async {
+    if (!Platform.isIOS) return;
+    try {
+      final session = await AudioSession.instance;
+      await session.configure(const AudioSessionConfiguration(
+        avAudioSessionCategory: AVAudioSessionCategory.playAndRecord,
+        avAudioSessionCategoryOptions: AVAudioSessionCategoryOptions.allowBluetooth,
+        avAudioSessionMode: AVAudioSessionMode.voiceChat,
+      ));
+      await session.setActive(true);
+    } catch (e) {
+      print('$TAG: iOS 音频会话配置失败(录音): $e');
+    }
+  }
+
   /// 初始化音频播放器
   static Future<void> initPlayer() async {
     // 确保任何旧播放器被释放
@@ -267,20 +308,10 @@ class AudioUtil {
 
       // iOS 必须显式配置并激活音频会话，否则 RawSoundPlayer(AVAudioEngine)
       // 没有正确的 category/输出路由，会完全无声或仅路由到听筒（"对话没声音"）。
+      // 统一交给 [_configureIosSession]（按 _callMode 选 扬声器/听筒），
+      // 该方法在每次开始播放 TTS 时也会再次调用，保证路由正确。
       if (Platform.isIOS) {
-        final session = await AudioSession.instance;
-        if (_callMode) {
-          // 通话模式：录音器已配好 playAndRecord+voiceChat（听筒路由），
-          // 这里仅确保会话激活，不改动 category。
-          await session.setActive(true);
-        } else {
-          // 聊天/播报模式：显式走扬声器，确保用户能听到小智说话。
-          await session.configure(const AudioSessionConfiguration(
-            avAudioSessionCategory: AVAudioSessionCategory.playback,
-            avAudioSessionCategoryOptions: AVAudioSessionCategoryOptions.defaultToSpeaker,
-          ));
-          await session.setActive(true);
-        }
+        await _configureIosSession();
       }
 
       // 创建新的播放器实例 - 完全按照官方示例的简单方式
@@ -327,6 +358,12 @@ class AudioUtil {
         await _pcmPlayer!.feed(pcmBytes);
         _updatePlaybackLevel(pcmData);
         return;
+      }
+
+      // 每轮 TTS 首个 chunk：确保 iOS 会话已切到正确播放路由
+      // （聊天里上一轮录音把会话切成了 playAndRecord 听筒，不切回则没外放）。
+      if (Platform.isIOS) {
+        await _configureIosSession();
       }
 
       // 未启动：先攒预缓冲，攒够 _prerollBytes 再一次性喂入，避免开头被吞。
@@ -380,6 +417,12 @@ class AudioUtil {
     _recreateDecoder();
     _prerollBuffer = null;
     _prerollPrimed = false;
+    // 新一轮 TTS：立即把 iOS 会话切到正确播放路由（见 [_configureIosSession]）。
+    // 关键：用户刚录完音，会话处于 playAndRecord(听筒)；不等到首个音频 chunk
+    // 才切，而是 tts start 时就切，保证整句都走扬声器(聊天)/听筒(通话)。
+    if (Platform.isIOS) {
+      _configureIosSession();
+    }
   }
 
   /// 停止播放
@@ -421,6 +464,12 @@ class AudioUtil {
   static Future<void> startRecording() async {
     if (!_isRecorderInitialized) {
       await initRecorder();
+    }
+
+    // iOS：确保会话处于录音路由(playAndRecord)。上一轮 TTS 可能已把会话切到
+    // playback，不切回会导致本次录音无声 / 听写失败。
+    if (Platform.isIOS) {
+      await _configureIosRecordSession();
     }
 
     if (_isRecording) {
