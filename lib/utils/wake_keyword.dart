@@ -1,13 +1,16 @@
 import 'package:pinyin/pinyin.dart';
-import 'package:jyutping/jyutping.dart';
 
 /// 把用户自定义的「唤醒名」（中文）转换为 sherpa-onnx KeywordSpotter 所需的
-/// 关键词行（每行格式：`token token ... @显示名`）。
+/// 关键词行（每行格式：`token token ...`，即模型词表中的拼音 token 序列）。
 ///
-/// - 国语：使用 Hanyu 拼音（带声调），并拆成「声母 + 带声调韵母」的子 token，
-///   以匹配 wenetspeech ppinyin KWS 模型的词表（参考官方 keywords.txt 格式）。
-/// - 粤语：使用 Jyutping（带声调数字），整音节作为一个 token。
-///   仅在额外放入粤语 KWS 模型时生效（官方目前无独立粤语 KWS 模型）。
+/// ⚠️ 关键点（之前唤醒完全失效的根因）：sherpa-onnx 的 KeywordSpotter 只认
+/// 「空格分隔的 token 序列」，token 必须全部存在于模型的 `tokens.txt` 里。
+/// 旧实现额外追加了 ` @显示名`（如 `x iǎo zh ì @小智`），而 `@` 与中文显示名
+/// 都不在词表中，导致该关键词永远无法命中 —— 表现就是「喊破喉咙也唤不醒」。
+/// 现已去掉 `@显示名`，只保留纯 token 序列。
+///
+/// 国语：使用 Hanyu 拼音（带声调），并拆成「声母 + 带声调韵母」的子 token，
+/// 以匹配 wenetspeech ppinyin KWS 模型的词表（参考官方 keywords.txt 格式）。
 class WakeKeyword {
   // 普通话声母（含 y/w；zh/ch/sh 为两字母，单独优先匹配）
   static const Set<String> _initials = {
@@ -17,8 +20,8 @@ class WakeKeyword {
 
   static const List<String> _twoLetterInitials = ['zh', 'ch', 'sh'];
 
-  /// 国语：中文名 -> ppinyin 关键词行
-  /// 例：'小智' -> 'x iǎo zh ì @小智'
+  /// 国语：中文名 -> ppinyin 关键词行（纯 token 序列，无 @ 显示名）
+  /// 例：'小智' -> 'x iǎo zh ì'
   static String mandarinLine(String name) {
     final py = PinyinHelper.getPinyin(
       name,
@@ -31,7 +34,7 @@ class WakeKeyword {
       if (syl.isEmpty) continue;
       tokens.addAll(_splitSyllable(syl));
     }
-    return '${tokens.join(' ')} @$name';
+    return tokens.join(' ');
   }
 
   /// 把单个拼音音节拆成 [声母, 带声调韵母]（零声母则整体作为一个 token）
@@ -47,24 +50,5 @@ class WakeKeyword {
     }
     // 零声母音节（a/o/e/ai/ao/ou/an/ang/er ...）整体作为一个 token
     return [syl];
-  }
-
-  /// 粤语：中文名 -> Jyutping 关键词行
-  /// 例：'小智' -> 'siu2 zi3 @小智'（具体发音取决于字库）
-  /// 若字库缺字或整串都不是中文，返回空字符串（调用方需跳过该行）。
-  static String cantoneseLine(String name) {
-    final syllables = <String>[];
-    for (int i = 0; i < name.length; i++) {
-      final ch = name[i];
-      if (!JyutpingHelper.isChinese(ch)) continue;
-      try {
-        final syl = JyutpingHelper.getJyutpingAsString(ch, false).trim();
-        if (syl.isNotEmpty) syllables.add(syl);
-      } catch (_) {
-        // 该字不在 Jyutping 字库内，忽略
-      }
-    }
-    if (syllables.isEmpty) return '';
-    return '${syllables.join(' ')} @$name';
   }
 }
