@@ -67,11 +67,34 @@ jobs:
           cd build/ios/iphoneos
           mkdir -p Payload
           cp -r Runner.app Payload/
-          zip -qry app-release-unsigned.ipa Payload
-          ls -lh app-release-unsigned.ipa
+          zip -qry 小智AI-unsigned.ipa Payload
+          ls -lh 小智AI-unsigned.ipa
 
       - uses: actions/upload-artifact@v4
         with:
-          name: xiaozhi-ios-unsigned
-          path: build/ios/iphoneos/app-release-unsigned.ipa
+          name: 小智AI-iOS-unsigned
+          path: build/ios/iphoneos/小智AI-unsigned.ipa
           retention-days: 30
+
+      # 用 GitHub Release CDN 发布（与 Action 产物存储 Azure 分属两套系统，
+      # 不受产物下载 401 故障影响）。softprops 动作直接走 GITHUB_TOKEN REST API，
+      # 比 gh CLI 更稳。
+      - name: Remove previous 'latest' release/tag
+        continue-on-error: true
+        run: |
+          curl -s -X DELETE -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            "https://api.github.com/repos/${{ github.repository }}/releases/tags/latest" || true
+          git -c http.extraheader="Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            push origin :refs/tags/latest || true
+
+      - name: Publish IPA to GitHub Release (latest)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: 小智AI iOS 未签名 IPA（最新构建）
+          files: build/ios/iphoneos/小智AI-unsigned.ipa
+          body: 自动构建的未签名 IPA（含聊天外放 + 语音通话打断修复）。用巨魔(TrollStore)侧载安装，支持 iOS 16.0–16.5。
+          prerelease: false
+          make_latest: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
