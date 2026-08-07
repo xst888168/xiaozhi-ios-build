@@ -1,0 +1,89 @@
+name: iOS Build (unsigned IPA)
+
+# 触发方式：
+#   1. 手动：在仓库 Actions 页点 "Run workflow"
+#   2. 推送：push 到 main/master 自动构建
+# 产物：未签名 IPA（artifact 可下载）。用 Windows 上的 Sideloadly + 你的免费 Apple ID
+#       即可侧载安装到 iPhone，无需 Mac、无需付费开发者账号。
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, master]
+
+jobs:
+  build-ios:
+    name: Build iOS (macOS)
+    runs-on: macos-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.29.3'
+          channel: 'stable'
+          cache: true
+
+      - name: Flutter version
+        run: flutter --version
+
+      - name: Pub get
+        run: flutter pub get
+
+      - name: Pod install
+        run: |
+          cd ios
+          pod install --repo-update || pod install
+
+      # 关闭代码签名：用 "-" 作为 CODE_SIGN_IDENTITY，xcodebuild 会跳过签名，
+      # 产出未签名的 Runner.app，后续手动打包成未签名 IPA。
+      # 如需正式签名（付费开发者），取消下方「可选：正式签名」注释并提供对应 Secrets。
+      - name: Build iOS (no codesign)
+        env:
+          FLUTTER_XCODE_CODE_SIGN_IDENTITY: '-'
+          FLUTTER_XCODE_CODE_SIGN_STYLE: 'Manual'
+          FLUTTER_XCODE_DEVELOPMENT_TEAM: ''
+          FLUTTER_XCODE_PROVISIONING_PROFILE_SPECIFIER: ''
+        run: |
+          cd ios
+          flutter build ios --release
+
+      # —— 可选：正式签名（取消注释并配置 Secrets 后生效）——
+      # 需要的 Secrets：
+      #   APPLE_CERT_P12_BASE64 : 导出为 p12 的发布证书（base64）
+      #   APPLE_CERT_PASSWORD   : p12 密码
+      #   APPLE_PROVISIONING_PROFILE_BASE64 : App Store/AdHoc mobileprovision（base64）
+      #   APPLE_TEAM_ID         : 10 位团队 ID
+      # - name: Import signing & re-sign
+      #   if: ${{ env.APPLE_CERT_P12_BASE64 != '' }}
+      #   env:
+      #     APPLE_CERT_P12_BASE64: ${{ secrets.APPLE_CERT_P12_BASE64 }}
+      #     APPLE_CERT_PASSWORD: ${{ secrets.APPLE_CERT_PASSWORD }}
+      #     APPLE_PROVISIONING_PROFILE_BASE64: ${{ secrets.APPLE_PROVISIONING_PROFILE_BASE64 }}
+      #     APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      #   run: |
+      #     mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
+      #     echo "$APPLE_PROVISIONING_PROFILE_BASE64" | base64 --decode > ~/Library/MobileDevice/Provisioning\ Profiles/profile.mobileprovision
+      #     echo "$APPLE_CERT_P12_BASE64" | base64 --decode > cert.p12
+      #     security create-keychain -p "" build.keychain
+      #     security import cert.p12 -k build.keychain -P "$APPLE_CERT_PASSWORD" -T /usr/bin/codesign
+      #     security list-keychains -s build.keychain
+      #     APP_PATH=$(find build/ios/iphoneos -name "Runner.app" -maxdepth 2 | head -n1)
+      #     /usr/bin/xcrun codesign --force --sign "$APPLE_TEAM_ID" "$APP_PATH"
+
+      - name: Package unsigned IPA
+        run: |
+          cd build/ios/iphoneos
+          mkdir -p Payload
+          cp -r Runner.app Payload/
+          zip -r "../../../小智AI-unsigned.ipa" Payload
+          ls -la ../../..
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: 小智AI-iOS-unsigned
+          path: build/小智AI-unsigned.ipa
+          retention-days: 30

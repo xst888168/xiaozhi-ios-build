@@ -1,0 +1,77 @@
+name: Build iOS (unsigned IPA)
+
+# 没有 Mac 也能出 iOS 包：GitHub 提供免费的 macOS runner。
+# 把本仓库推到 GitHub 后，在 Actions 页面手动触发（workflow_dispatch）本工作流即可。
+# 产物是「未签名 IPA」，可用 AltStore / Sideloadly / TrollStore 侧载安装。
+# 若要上架 App Store 或走 TestFlight，需要在下面补充你自己的证书与描述文件。
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build-ios:
+    runs-on: macos-14
+    timeout-minutes: 90
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+
+      - name: Show Xcode / Flutter versions
+        run: |
+          xcodebuild -version
+          sw_vers
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.29.3'
+          channel: stable
+          cache: true
+
+      - name: Flutter doctor
+        run: flutter doctor -v
+
+      - name: Ensure CocoaPods
+        run: |
+          if ! command -v pod >/dev/null 2>&1; then
+            echo "CocoaPods not found, installing..."
+            sudo gem install cocoapods
+          else
+            pod --version
+          fi
+
+      - name: Get dependencies
+        run: flutter pub get
+
+      - name: Pod install
+        run: |
+          cd ios
+          # 清理可能过期的锁文件：仓库内 Podfile.lock 可能锁死旧版
+          # flutter_sound_core，与 pub 解析出的 flutter_sound 版本冲突。
+          rm -f Podfile.lock
+          rm -rf Pods
+          pod install --repo-update
+
+      - name: Build iOS (no codesign)
+        env:
+          DEVELOPMENT_TEAM: ""
+        run: flutter build ios --release --no-codesign
+
+      - name: Package unsigned IPA
+        run: |
+          cd build/ios/iphoneos
+          mkdir -p Payload
+          cp -r Runner.app Payload/
+          zip -qry app-release-unsigned.ipa Payload
+          ls -lh app-release-unsigned.ipa
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: xiaozhi-ios-unsigned
+          path: build/ios/iphoneos/app-release-unsigned.ipa
+          retention-days: 30
