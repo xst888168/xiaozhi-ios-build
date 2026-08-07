@@ -1,5 +1,8 @@
 name: Build iOS (unsigned IPA)
 
+permissions:
+  contents: write
+
 # 没有 Mac 也能出 iOS 包：GitHub 提供免费的 macOS runner。
 # 把本仓库推到 GitHub 后，在 Actions 页面手动触发（workflow_dispatch）本工作流即可。
 # 产物是「未签名 IPA」，可用 AltStore / Sideloadly / TrollStore 侧载安装。
