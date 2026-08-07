@@ -50,8 +50,9 @@ class _VoiceCallScreenState extends State<VoiceCallScreen>
   // 全双工（可打断）相关：小智讲话期间检测用户插话并打断它。
   Timer? _bargeInTimer; // 插话检测轮询定时器（每 60ms）
   int _bargeInAboveMs = 0; // 去回声后的用户语音持续高于阈值的累计时长
-  static const double _bargeInEchoCoupling = 1.2; // 回声耦合系数（真机调参）
+  static const double _bargeInEchoCoupling = 2.5; // 回声耦合系数（留足余量，避免小智自己的声音被视为插话）
   static const double _bargeInUserThreshold = 900.0; // 去回声后用户语音 RMS 阈值（越低越易打断）
+  static const double _bargeInPlayFloor = 400.0; // 外放活跃阈值：超过则视为"小智正在出声"，暂停插话检测（防回声误触秒跳）
   static const int _bargeInSustainMs = 180; // 持续该时长才判定插话，防误触
 
   // 视频模式相关
@@ -474,9 +475,27 @@ class _VoiceCallScreenState extends State<VoiceCallScreen>
     _bargeInTimer = Timer.periodic(const Duration(milliseconds: 60), (_) {
       if (!mounted || !_isAssistantSpeaking) return;
       final micRms = AudioUtil.currentRms;
-      final echo = AudioUtil.playbackLevel * _bargeInEchoCoupling;
+      final playRms = AudioUtil.playbackLevel;
+
+      // 关键修复（iOS 通话"秒跳/来回跳"根因）：
+      // 小智正在外放时，麦克风必然录到它自己的回声，此时无法可靠区分人声与回声。
+      // 若仍做插话检测，回声会被当成"用户在说话"→ 不断打断小智 →
+      // 小智一停→用户回合→小智又讲→再被回声打断…… 形成秒级来回跳。
+      // 因此：只要外放音量仍处活跃区间，就直接忽略（不累计插话），
+      // 仅在 TTS 的静音间隙（句间停顿/换气/说完）才允许检测用户真实插话。
+      if (playRms > _bargeInPlayFloor) {
+        _bargeInAboveMs = 0;
+        return;
+      }
+
+      // 外放已静音：此时麦克风信号若明显高于「噪声底 + 回声残差」，
+      // 才可能是真人说话。用自适应阈值（噪声底×倍数）过滤环境声/回声尾音。
+      final echo = playRms * _bargeInEchoCoupling;
       final cleaned = micRms - echo;
-      if (cleaned > _bargeInUserThreshold) {
+      final double userThresh = _bargeInUserThreshold < AudioUtil.effectiveSilenceThreshold
+          ? AudioUtil.effectiveSilenceThreshold * 1.5
+          : _bargeInUserThreshold;
+      if (cleaned > userThresh) {
         _bargeInAboveMs += 60;
       } else {
         _bargeInAboveMs = 0;
