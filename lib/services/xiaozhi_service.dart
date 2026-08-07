@@ -638,11 +638,18 @@ class XiaozhiService {
 
       case XiaozhiEventType.binaryMessage:
         // 处理二进制音频数据
-        // 如果当前用户正在录音（插话状态），丢弃服务端下发的音频，
-        // 避免"小智打断用户说话"。
         if (_audioStreamSubscription != null) {
-          print('$TAG: 用户正在说话，丢弃服务端音频');
-          return;
+          if (_isVoiceCallActive) {
+            // 语音通话中：直接丢弃服务端音频，避免"小智打断用户说话"；
+            // 通话靠全双工打断逻辑处理，不在此处切换录音状态（麦克风需持续采集）。
+            print('$TAG: 通话中用户正在说话，丢弃服务端音频');
+            return;
+          }
+          // 普通聊天：小智开始回应即结束当前聆听。否则录音会话会把 iOS 音频路由
+          // 锁在听筒(playAndRecord)，TTS 只能外放失败/无声音。结束聆听后
+          // AudioUtil.initPlayer 会把会话切到 playback+扬声器，确保听得见。
+          print('$TAG: 小智开始回应，结束当前聆听以播放 TTS');
+          stopListening();
         }
         final audioData = event.data as List<int>;
         AudioUtil.playOpusData(Uint8List.fromList(audioData));
