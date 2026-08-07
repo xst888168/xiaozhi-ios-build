@@ -35,6 +35,8 @@ jobs:
       - name: Pod install
         run: |
           cd ios
+          rm -f Podfile.lock
+          rm -rf Pods
           pod install --repo-update || pod install
 
       # 关闭代码签名：用 "-" 作为 CODE_SIGN_IDENTITY，xcodebuild 会跳过签名，
@@ -48,7 +50,7 @@ jobs:
           FLUTTER_XCODE_PROVISIONING_PROFILE_SPECIFIER: ''
         run: |
           cd ios
-          flutter build ios --release
+          flutter build ios --release --no-codesign
 
       # —— 可选：正式签名（取消注释并配置 Secrets 后生效）——
       # 需要的 Secrets：
