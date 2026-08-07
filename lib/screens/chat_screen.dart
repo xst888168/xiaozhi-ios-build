@@ -16,9 +16,11 @@ import 'package:ai_assistant/services/dify_service.dart';
 import 'package:ai_assistant/services/xiaozhi_service.dart';
 import 'package:ai_assistant/services/minimax_service.dart';
 import 'package:ai_assistant/services/wake_word_service.dart';
+import 'package:ai_assistant/services/wake_router.dart';
 import 'package:ai_assistant/utils/audio_util.dart';
 import 'package:ai_assistant/widgets/message_bubble.dart';
 import 'package:ai_assistant/screens/voice_call_screen.dart';
+import 'package:ai_assistant/screens/console_screen.dart';
 import 'dart:convert';
 import 'dart:async';
 import 'package:path_provider/path_provider.dart';
@@ -26,7 +28,15 @@ import 'package:path_provider/path_provider.dart';
 class ChatScreen extends StatefulWidget {
   final Conversation conversation;
 
-  const ChatScreen({super.key, required this.conversation});
+  const ChatScreen({
+    super.key,
+    required this.conversation,
+    this.autoListen = false,
+  });
+
+  /// 由全局唤醒路由（WakeRouter）唤起时置 true：进入会话即自动开始聆听，
+  /// 让用户喊完"小智"后直接开口，无需再点麦克风。
+  final bool autoListen;
 
   @override
   State<ChatScreen> createState() => _ChatScreenState();
@@ -39,8 +49,6 @@ class _ChatScreenState extends State<ChatScreen> {
   XiaozhiService? _xiaozhiService; // 保持XiaozhiService实例
   DifyService? _difyService; // 保持DifyService实例
   MiniMaxService? _minimaxService; // 保持MiniMaxService实例
-  Timer? _connectionCheckTimer; // 添加定时器检查连接状态
-  Timer? _autoReconnectTimer; // 自动重连定时器
 
   // 语音输入相关
   bool _isVoiceInputMode = false;
@@ -54,6 +62,37 @@ class _ChatScreenState extends State<ChatScreen> {
   double _minWaveHeight = 5.0;
   double _maxWaveHeight = 30.0;
   final Random _random = Random();
+
+  // VAD 实时反馈（让用户看得见「还有几秒自动发送」）
+  Timer? _vadUiTimer;
+  int _vadRemainMs = 0; // 距离自动发送的剩余毫秒；0 表示正在说话
+  double _vadLevel = 0.0; // 当前音量 RMS
+
+  /// 启动 VAD 状态刷新（每 120ms 更新一次倒计时与音量）
+  void _startVadUiTimer() {
+    _vadUiTimer?.cancel();
+    _vadUiTimer = Timer.periodic(const Duration(milliseconds: 120), (_) {
+      if (!mounted || !_isRecording) return;
+      final silentFor = AudioUtil.silentForMs;
+      final remain =
+          silentFor <= 0 ? 0 : (AudioUtil.silenceTimeoutMs - silentFor);
+      setState(() {
+        _vadRemainMs = remain > 0 ? remain : 0;
+        _vadLevel = AudioUtil.currentRms;
+      });
+    });
+  }
+
+  void _stopVadUiTimer() {
+    _vadUiTimer?.cancel();
+    _vadUiTimer = null;
+    if (mounted) {
+      setState(() {
+        _vadRemainMs = 0;
+        _vadLevel = 0.0;
+      });
+    }
+  }
 
   @override
   void initState() {
@@ -92,25 +131,6 @@ class _ChatScreenState extends State<ChatScreen> {
       // 如果是小智对话，初始化服务
       if (widget.conversation.type == ConversationType.xiaozhi) {
         _initXiaozhiService();
-        // 添加定时器定期检查连接状态
-        _connectionCheckTimer = Timer.periodic(const Duration(seconds: 2), (
-          timer,
-        ) {
-          if (mounted && _xiaozhiService != null) {
-            final wasConnected = _xiaozhiService!.isConnected;
-
-            // 刷新UI
-            setState(() {});
-
-            // 如果状态从连接变为断开，尝试自动重连
-            if (wasConnected &&
-                !_xiaozhiService!.isConnected &&
-                _autoReconnectTimer == null) {
-              print('检测到连接断开，准备自动重连');
-              _scheduleReconnect();
-            }
-          }
-        });
 
         // 默认启用语音输入模式 (针对小智对话)
         setState(() {
@@ -132,51 +152,22 @@ class _ChatScreenState extends State<ChatScreen> {
     });
   }
 
-  // 安排自动重连
-  void _scheduleReconnect() {
-    // 取消现有重连定时器
-    _autoReconnectTimer?.cancel();
-
-    // 创建新的重连定时器，5秒后尝试重连
-    _autoReconnectTimer = Timer(const Duration(seconds: 5), () async {
-      print('正在尝试自动重连...');
-      if (_xiaozhiService != null && !_xiaozhiService!.isConnected && mounted) {
-        try {
-          await _xiaozhiService!.disconnect();
-          await _xiaozhiService!.connect();
-
-          setState(() {});
-          print('自动重连 ${_xiaozhiService!.isConnected ? "成功" : "失败"}');
-
-          // 如果重连失败，则继续尝试重连
-          if (!_xiaozhiService!.isConnected) {
-            _scheduleReconnect();
-          } else {
-            _autoReconnectTimer = null;
-          }
-        } catch (e) {
-          print('自动重连出错: $e');
-          _scheduleReconnect(); // 出错后继续尝试
-        }
-      } else {
-        _autoReconnectTimer = null;
-      }
-    });
-  }
+  // 重连完全由 XiaozhiWebSocketManager 内部负责（指数退避 + 抖动），
+  // 这里不再自行 disconnect+connect，避免双重复连造成"已断开→又连接"的闪烁/风暴。
 
   @override
   void dispose() {
     _textController.dispose();
     _scrollController.dispose();
     // 取消所有定时器
-    _connectionCheckTimer?.cancel();
-    _autoReconnectTimer?.cancel();
     _waveAnimationTimer?.cancel();
+    _vadUiTimer?.cancel();
 
     // 清理唤醒词 / VAD 绑定，并确保全局唤醒监听恢复
     AudioUtil.vadEnabled = false;
     AudioUtil.onSilenceAutoStop = null;
-    WakeWordService().onWake = null;
+    // 离开聊天页：恢复全局兜底唤醒回调，保证息屏/回到首页后语音唤醒仍可用
+    WakeWordService().onWake = WakeRouter.globalWake;
     WakeWordService().resume();
 
     // 在销毁前确保停止所有音频播放
@@ -210,6 +201,11 @@ class _ChatScreenState extends State<ChatScreen> {
     // 连接后刷新UI状态
     if (mounted) {
       setState(() {});
+    }
+
+    // 由语音唤醒唤起：连接建立后自动开始聆听，用户喊完"小智"可直接开口。
+    if (widget.autoListen && mounted && !_isRecording) {
+      _onWake();
     }
   }
 
@@ -252,7 +248,8 @@ class _ChatScreenState extends State<ChatScreen> {
         });
       }
     } else if (event.type == XiaozhiServiceEventType.connected ||
-        event.type == XiaozhiServiceEventType.disconnected) {
+        event.type == XiaozhiServiceEventType.disconnected ||
+        event.type == XiaozhiServiceEventType.reconnecting) {
       // 当连接状态发生变化时，更新UI
       setState(() {});
     }
@@ -373,6 +370,22 @@ class _ChatScreenState extends State<ChatScreen> {
                 ),
               ),
             ),
+          if (widget.conversation.type == ConversationType.xiaozhi)
+            IconButton(
+              icon: const Icon(Icons.settings, color: Colors.black, size: 24),
+              tooltip: '配置中心',
+              onPressed: () {
+                if (_xiaozhiService != null) {
+                  _xiaozhiService!.stopPlayback();
+                }
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (context) => const ConsoleScreen(),
+                  ),
+                );
+              },
+            ),
         ],
         leading: IconButton(
           icon: const Icon(Icons.arrow_back, color: Colors.black, size: 26),
@@ -388,25 +401,15 @@ class _ChatScreenState extends State<ChatScreen> {
             widget.conversation.type == ConversationType.xiaozhi
                 ? Row(
                   children: [
-                    Container(
-                      decoration: BoxDecoration(
-                        shape: BoxShape.circle,
-                        boxShadow: [
-                          BoxShadow(
-                            color: Colors.grey.withOpacity(0.3),
-                            blurRadius: 8,
-                            spreadRadius: 0,
-                            offset: const Offset(0, 3),
-                          ),
-                        ],
-                      ),
-                      child: CircleAvatar(
-                        radius: 20,
-                        backgroundColor: Colors.grey.shade700,
-                        child: const Icon(
-                          Icons.mic,
-                          color: Colors.white,
-                          size: 22,
+                    CircleAvatar(
+                      radius: 22,
+                      backgroundColor: const Color(0xFFE8DFF7),
+                      child: const Text(
+                        '智',
+                        style: TextStyle(
+                          color: Color(0xFF5E3FA3),
+                          fontWeight: FontWeight.bold,
+                          fontSize: 20,
                         ),
                       ),
                     ),
@@ -414,34 +417,23 @@ class _ChatScreenState extends State<ChatScreen> {
                     Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text(
-                          widget.conversation.title,
-                          style: const TextStyle(
+                        const Text(
+                          '小智 AI',
+                          style: TextStyle(
                             color: Colors.black,
                             fontWeight: FontWeight.bold,
-                            fontSize: 18,
+                            fontSize: 20,
                           ),
                         ),
-                        Container(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 8,
-                            vertical: 2,
-                          ),
-                          decoration: BoxDecoration(
-                            color: Colors.grey.shade200,
-                            borderRadius: BorderRadius.circular(10),
-                            boxShadow: [
-                              BoxShadow(
-                                color: Colors.black.withOpacity(0.03),
-                                blurRadius: 1,
-                                spreadRadius: 0,
-                                offset: const Offset(0, 1),
-                              ),
-                            ],
-                          ),
-                          child: const Text(
-                            '语音',
-                            style: TextStyle(color: Colors.grey, fontSize: 12),
+                        Text(
+                          (_xiaozhiService == null)
+                              ? '空闲'
+                              : _xiaozhiService!.isReconnecting
+                              ? '重连中…'
+                              : (_xiaozhiService!.isConnected ? '已连接' : '空闲'),
+                          style: TextStyle(
+                            color: Colors.grey.shade600,
+                            fontSize: 13,
                           ),
                         ),
                       ],
@@ -574,6 +566,7 @@ class _ChatScreenState extends State<ChatScreen> {
     );
 
     final bool isConnected = _xiaozhiService?.isConnected ?? false;
+    final bool isReconnecting = _xiaozhiService?.isReconnecting ?? false;
 
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
@@ -598,12 +591,17 @@ class _ChatScreenState extends State<ChatScreen> {
             height: 10,
             decoration: BoxDecoration(
               shape: BoxShape.circle,
-              color: isConnected ? Colors.green : Colors.red,
+              color:
+                  isReconnecting
+                      ? Colors.orange
+                      : (isConnected ? Colors.green : Colors.red),
               boxShadow: [
                 BoxShadow(
-                  color: (isConnected ? Colors.green : Colors.red).withOpacity(
-                    0.4,
-                  ),
+                  color:
+                      (isReconnecting
+                              ? Colors.orange
+                              : (isConnected ? Colors.green : Colors.red))
+                          .withOpacity(0.4),
                   blurRadius: 4,
                   spreadRadius: 1,
                 ),
@@ -612,10 +610,13 @@ class _ChatScreenState extends State<ChatScreen> {
           ),
           const SizedBox(width: 8),
           Text(
-            isConnected ? '已连接' : '未连接',
+            isReconnecting ? '重连中…' : (isConnected ? '已连接' : '未连接'),
             style: TextStyle(
               fontSize: 13,
-              color: isConnected ? Colors.green : Colors.red,
+              color:
+                  isReconnecting
+                      ? Colors.orange
+                      : (isConnected ? Colors.green : Colors.red),
               fontWeight: FontWeight.w500,
             ),
           ),
@@ -890,12 +891,20 @@ class _ChatScreenState extends State<ChatScreen> {
             child: InkWell(
               borderRadius: BorderRadius.circular(24),
               onTap: () {
-                // 点击即说：再次点击取消（VAD 静音2秒也会自动发送）
+                // 点击即说：再次点击 = 立即结束并发送（静音 N 秒也会自动发送）
                 if (_isRecording) {
-                  _cancelRecording();
+                  _stopWaveAnimation();
+                  _stopRecording();
                 } else {
                   _startRecording();
                   _startWaveAnimation();
+                }
+              },
+              // 长按 = 放弃本次录音（不发送）
+              onLongPress: () {
+                if (_isRecording) {
+                  _stopWaveAnimation();
+                  _cancelRecording();
                 }
               },
               child: Container(
@@ -921,18 +930,22 @@ class _ChatScreenState extends State<ChatScreen> {
                     // 波纹动画效果
                     if (_isRecording) _buildWaveAnimationIndicator(),
 
-                    // 文字提示
+                    // 文字提示（录音中显示静音倒计时，让「自动发送」可感知）
                     Center(
                       child: Text(
                         _isRecording
-                            ? "聆听中… 点击取消"
-                            : "点击说话，静音2秒自动发送",
+                            ? (_vadRemainMs > 0
+                                ? "${(_vadRemainMs / 1000).toStringAsFixed(1)}s 后自动发送 · 点击立即发送"
+                                : "聆听中… 点击结束并发送")
+                            : "点击说话 · 停顿${(AudioUtil.silenceTimeoutMs / 1000).toStringAsFixed(0)}秒自动发送",
                         style: TextStyle(
                           color:
                               _isRecording
-                                  ? Colors.blue.shade700
+                                  ? (_vadRemainMs > 0
+                                      ? Colors.orange.shade800
+                                      : Colors.blue.shade700)
                                   : const Color.fromARGB(255, 9, 9, 9),
-                          fontSize: 16,
+                          fontSize: 15,
                           fontWeight:
                               _isRecording
                                   ? FontWeight.w500
@@ -1015,7 +1028,7 @@ class _ChatScreenState extends State<ChatScreen> {
     );
   }
 
-  // 开始录音
+  // 开始录音（点击说话）
   void _startRecording() async {
     if (widget.conversation.type != ConversationType.xiaozhi ||
         _xiaozhiService == null) {
@@ -1030,7 +1043,9 @@ class _ChatScreenState extends State<ChatScreen> {
     setState(() {
       _isRecording = true;
       _isCancelling = false;
+      _vadRemainMs = 0;
     });
+    _startVadUiTimer();
 
     // 录音期间暂停全局唤醒监听，避免小智回复语音造成回声误触发
     await WakeWordService().suspend();
@@ -1064,13 +1079,25 @@ class _ChatScreenState extends State<ChatScreen> {
   void _onWake() async {
     if (!mounted || _isRecording) return;
     print('唤醒词命中，自动开始聆听');
+
+    // 唤醒服务刚释放麦克风，Android 上需要一点时间才能被再次占用，
+    // 否则录音会启动失败（表现为「唤醒了但没在听」）。
+    await Future.delayed(const Duration(milliseconds: 250));
+    if (!mounted || _isRecording) return;
+
+    // 切换到语音输入模式，让用户看到聆听状态
+    if (!_isVoiceInputMode) {
+      setState(() => _isVoiceInputMode = true);
+    }
     _startRecording();
+    _startWaveAnimation();
   }
 
   // 停止录音并发送
   void _stopRecording() async {
     if (_isStopping) return;
     _isStopping = true;
+    _stopVadUiTimer();
     try {
       setState(() {
         _isLoading = true;
@@ -1099,7 +1126,7 @@ class _ChatScreenState extends State<ChatScreen> {
         _isLoading = false;
       });
       _isStopping = false;
-      // 对话结束，恢复全局唤醒监听
+      // 一轮对话结束，恢复全局唤醒监听
       await WakeWordService().resume();
     }
   }
@@ -1108,6 +1135,7 @@ class _ChatScreenState extends State<ChatScreen> {
   void _cancelRecording() async {
     if (_isStopping) return;
     _isStopping = true;
+    _stopVadUiTimer();
     try {
       setState(() {
         _isRecording = false;
