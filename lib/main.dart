@@ -17,11 +17,15 @@ import 'dart:io';
 import 'dart:ui';
 import 'package:ai_assistant/utils/audio_util.dart';
 import 'package:ai_assistant/services/wake_word_service.dart';
+import 'package:ai_assistant/services/wake_router.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter_displaymode/flutter_displaymode.dart';
 
 // 是否启用调试工具
 const bool enableDebugTools = true;
+
+/// 全局导航键：供全局唤醒路由（WakeRouter）在任意界面跳转打开小智会话。
+final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -105,12 +109,26 @@ void main() async {
   // 若用户在设置中开启了离线唤醒词，则初始化并启动常驻监听
   try {
     final prefs = await SharedPreferences.getInstance();
-    final wakeEnabled = prefs.getBool('wake_word_enabled') ?? false;
+    final wakeEnabled = prefs.getBool('wake_word_enabled') ?? true;
     final wakeName = prefs.getString('wake_word_name') ?? '小智';
     if (wakeEnabled) {
+      WakeWordService.sensitivity = (prefs.getDouble('wake_sensitivity') ?? 0.10);
       await WakeWordService().init(name: wakeName);
-      await WakeWordService().start();
+      await WakeWordService().start(force: true);
+      // 启动原生前台保活服务：息屏/退后台也能持续监听唤醒词
+      if (WakeWordService().isRunning) {
+        await WakeWordService.startNativeWakeService();
+      }
+    } else {
+      // 确保未启用时不会残留保活服务
+      await WakeWordService.stopNativeWakeService();
     }
+
+    // 应用 VAD（静音自动断句）参数
+    AudioUtil.applyVadSettings(
+      timeoutMs: prefs.getInt('vad_silence_ms') ?? 700,
+      minRms: (prefs.getInt('vad_min_rms') ?? 350).toDouble(),
+    );
   } catch (e) {
     print('唤醒词启动失败: $e');
   }
@@ -125,6 +143,10 @@ void main() async {
       child: const MyApp(),
     ),
   );
+
+  // 注入导航键并绑定全局兜底唤醒回调：离开聊天页后语音唤醒依然能把用户带进会话。
+  WakeRouter.navigatorKey = navigatorKey;
+  WakeRouter.init();
 }
 
 // 设置系统UI沉浸式效果
@@ -162,6 +184,7 @@ class MyApp extends StatelessWidget {
 
     return MaterialApp(
       title: 'AI-LHHT',
+      navigatorKey: navigatorKey,
       debugShowCheckedModeBanner: false,
       theme: AppTheme.lightTheme,
       darkTheme: AppTheme.darkTheme,
