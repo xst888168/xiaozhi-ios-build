@@ -62,6 +62,17 @@ class AudioUtil {
   static bool _noiseCalibrated = false;
   static double _lastRms = 0.0;
 
+  /// 当前轮说话的 RMS 峰值：用于「相对峰值」端点检测。
+  /// 用户说完话后环境噪声（即使高于绝对噪声底）通常远低于说话峰值，
+  /// 据此判定静音可避免「环境杂音被当成人声 → 永不结束 → 不发送」。
+  static double _utterancePeak = 0.0;
+  /// 端点检测：语音降至峰值的该比例以下才视为静音（相对峰值静音）。
+  static const double _silenceFraction = 0.30;
+  /// 单轮说话硬上限（毫秒）：超过则强制断句发送，杜绝任何「一直发送不出去」。
+  static const int _maxUtteranceMs = 20000;
+  /// 当前聆听周期起点（毫秒）：用于单轮硬上限计时，每轮聆听重置。
+  static int? _utteranceStartMs;
+
   /// 实时电平回调：(rms, 是否判定为静音)。UI 层可用于显示音量条 / 倒计时。
   static void Function(double rms, bool isSilent)? onLevel;
 
@@ -257,6 +268,11 @@ class AudioUtil {
   static bool _callMode = false;
   static set callMode(bool v) => _callMode = v;
 
+  /// iOS 播放路由标志：非通话模式下是否已把会话类别切到「扬声器」。
+  /// 录音会把会话留在 playAndRecord（无 defaultToSpeaker → 听筒/无声），
+  /// 若不重新切回，聊天 TTS 会走听筒导致「听不到声音」。每次新 TTS 前重新断言一次。
+  static bool _speakerRouted = false;
+
   /// 初始化音频播放器
   static Future<void> initPlayer() async {
     // 确保任何旧播放器被释放
@@ -294,6 +310,7 @@ class AudioUtil {
       _isPlayerInitialized = true;
       _prerollBuffer = null;
       _prerollPrimed = false;
+      _speakerRouted = !_callMode; // 通话=听筒(false)，聊天=扬声器(true)
       print('$TAG: PCM播放器初始化成功');
     } catch (e) {
       print('$TAG: PCM播放器初始化失败: $e');
@@ -301,9 +318,32 @@ class AudioUtil {
     }
   }
 
+  /// iOS 非通话模式：确保音频会话路由到扬声器（playback + defaultToSpeaker）。
+  /// 必须在每次 TTS 播放前断言：录音结束后会话类别停在 playAndRecord，
+  /// 若复用已初始化的播放器而不重设路由，TTS 会落到听筒/无声（聊天「听不到声音」根因）。
+  static Future<void> _ensurePlaybackSpeaker() async {
+    if (!Platform.isIOS) return;
+    if (_callMode) return; // 通话走听筒，不走扬声器
+    if (_speakerRouted) return;
+    try {
+      final session = await AudioSession.instance;
+      await session.configure(const AudioSessionConfiguration(
+        avAudioSessionCategory: AVAudioSessionCategory.playback,
+        avAudioSessionCategoryOptions: AVAudioSessionCategoryOptions.defaultToSpeaker,
+      ));
+      await session.setActive(true);
+      _speakerRouted = true;
+      print('$TAG: iOS 播放路由已切到扬声器');
+    } catch (e) {
+      print('$TAG: iOS 扬声器路由设置失败: $e');
+    }
+  }
+
   /// 播放Opus音频数据
   static Future<void> playOpusData(Uint8List opusData) async {
     try {
+      // 确保 iOS 聊天模式 TTS 走扬声器（录音可能把会话留在 playAndRecord）
+      await _ensurePlaybackSpeaker();
       // 如果播放器未初始化，先初始化
       if (!_isPlayerInitialized || _pcmPlayer == null) {
         await initPlayer();
@@ -403,6 +443,7 @@ class AudioUtil {
     }
     _prerollPrimed = false;
     _playbackLevel = 0.0;
+    _speakerRouted = false; // 下次 TTS 重新断言扬声器路由
   }
 
   /// 释放资源
@@ -472,6 +513,8 @@ class AudioUtil {
         _noiseSampleCount = 0;
         _noiseCalibrated = false;
         _lastRms = 0.0;
+        _utterancePeak = 0.0;
+        _utteranceStartMs = null;
 
         // 全新启动时，依据当前配置装备静音断句定时器（逻辑见 _rearmSilenceTimer）。
         _rearmSilenceTimer();
@@ -522,11 +565,23 @@ class AudioUtil {
     _silenceStartMs = null; // 新一轮聆听：静音计时从头开始
     _autoStopping = false;
     _hasSpoken = false; // 重置：必须检测到本轮真实语音才允许断句发送
+    _utterancePeak = 0.0; // 重置本轮说话峰值
+    _utteranceStartMs = DateTime.now().millisecondsSinceEpoch; // 本轮计时起点
     _silenceTimer = Timer.periodic(const Duration(milliseconds: 100), (_) {
       if (!_isRecording || _autoStopping || _silenceTimer == null) return;
       final now = DateTime.now().millisecondsSinceEpoch;
       if (_recordStartMs == null) return;
       final recordMs = now - _recordStartMs!;
+      // 单轮硬上限：超过该时长（如用户一直没停、或环境噪声被误判为语音）
+      // 强制断句发送，确保永不「一直发送不出去」。
+      final utteranceMs =
+          _utteranceStartMs == null ? recordMs : (now - _utteranceStartMs!);
+      if (utteranceMs > _maxUtteranceMs) {
+        _autoStopping = true;
+        print('$TAG: 达到单轮上限 ${_maxUtteranceMs}ms，强制断句发送');
+        onSilenceAutoStop?.call();
+        return;
+      }
       if (recordMs < MIN_RECORD_BEFORE_AUTOSTOP_MS) return;
       final silenceMs = _silenceStartMs == null ? 0 : (now - _silenceStartMs!);
       // 只在「已检测到真实语音」后，且连续静音达到阈值才断句发送，
@@ -563,6 +618,8 @@ class AudioUtil {
     _noiseSum = 0.0;
     _noiseSampleCount = 0;
     _lastRms = 0.0;
+    _utterancePeak = 0.0;
+    _speakerRouted = false;
 
     // 停止录音
     try {
@@ -616,11 +673,24 @@ class AudioUtil {
       return;
     }
 
-    final double threshold = effectiveSilenceThreshold;
-    final bool isSilent = rms <= threshold;
+    final double baseThreshold = effectiveSilenceThreshold;
+    final bool baseSilent = rms <= baseThreshold;
+
+    // 跟踪本轮说话的 RMS 峰值（仅在已确认说过话后更新）
+    if (!baseSilent && _hasSpoken && rms > _utterancePeak) {
+      _utterancePeak = rms;
+    }
+
+    // 相对峰值静音：说话峰值 × 比例。用户说完后环境噪声通常远低于峰值，
+    // 即使略高于「绝对噪声底阈值」也应判定为静音 → 正常结束、发送，
+    // 不再被环境杂音当成持续人声而「一直发送不出去」。
+    final double relThreshold = _utterancePeak * _silenceFraction;
+    final bool relSilent = _utterancePeak > 0 && rms <= relThreshold;
+
+    final bool isSilent = baseSilent || relSilent;
 
     if (!isSilent) {
-      _silenceStartMs = null; // 有声音，重置静音计时
+      _silenceStartMs = null; // 仍有明显声音，重置静音计时
       _hasSpoken = true; // 检测到真实语音：后续静音才允许断句
     } else if (_silenceStartMs == null) {
       _silenceStartMs = now; // 进入静音区间，开始计时
