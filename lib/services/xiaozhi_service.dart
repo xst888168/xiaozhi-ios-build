@@ -109,7 +109,10 @@ class XiaozhiService {
     // 如果已经在语音通话模式，直接返回
     if (_isVoiceCallActive) return;
 
-    AudioUtil.callMode = true; // 通话播放走听筒（playAndRecord/voiceChat）
+    // 语音通话同样走扬声器外放（用户要求通话也要外放且顺畅）。
+    // 与聊天共用 playAndRecord 类别，仅用 defaultToSpeaker 输出到扬声器；
+    // 不切到听筒，也不在录音/播放间切换 category（避免打断录音器）。
+    AudioUtil.callMode = false; // 外放（defaultToSpeaker）
 
     try {
       print('$TAG: 正在切换到语音通话模式');
@@ -448,10 +451,11 @@ class XiaozhiService {
   /// 从第二轮起录音器是"热"状态、几乎立刻吐 PCM，于是第二句听不见。
   Future<void> startListeningCall() async {
     try {
-      // 避免重复开始录音
+      // 避免重复开始录音：若已存在订阅，先取消再重新订阅（防御性自愈），
+      // 防止「重复开始直接 return」导致新一轮聆听拿不到录音事件而卡死在已连接。
       if (_audioStreamSubscription != null) {
-        print('$TAG: 已经在录音中，忽略重复开始');
-        return;
+        await _audioStreamSubscription!.cancel();
+        _audioStreamSubscription = null;
       }
 
       // 确保已经有会话ID
