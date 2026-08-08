@@ -1008,21 +1008,22 @@ class _VoiceCallScreenState extends State<VoiceCallScreen>
                         },
                       ),
                       const SizedBox(width: 24),
-                      // 手掌打断：小智说话时显示，点击后停止播放并立即听我说
-                      if (_isAssistantSpeaking)
-                        _buildControlButton(
-                          icon: Icons.pan_tool,
-                          color: Colors.white,
-                          backgroundColor: Colors.orange.shade600,
-                          size: 64,
-                          onPressed: () async {
-                            print('语音通话: 用户点击手掌打断');
-                            await _xiaozhiService.stopPlayback();
-                            await _xiaozhiService.sendAbortSignal();
-                            _startSpeaking();
-                          },
-                        ),
-                      if (_isAssistantSpeaking) const SizedBox(width: 24),
+                      // 手掌打断：常驻可见。点击即中断小智并立即听我说，
+                      // 任何状态下都能用（小智讲时打断、自己讲时确保继续聆听、思考时抢话）。
+                      _buildControlButton(
+                        icon: Icons.pan_tool,
+                        color: Colors.white,
+                        backgroundColor:
+                            _isAssistantSpeaking
+                                ? Colors.orange.shade600
+                                : Colors.orange.shade400,
+                        size: 64,
+                        onPressed: () async {
+                          print('语音通话: 用户点击手掌打断/插话');
+                          _interruptAssistant();
+                        },
+                      ),
+                      const SizedBox(width: 24),
                       _buildEndCallButton(),
                     ],
                   ),
