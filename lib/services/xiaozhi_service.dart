@@ -63,6 +63,7 @@ class XiaozhiService {
   bool _isVoiceCallActive = false;
   bool _isAssistantSpeaking = false; // 小智是否正在说话（用于断线重连时避免抢话）
   int _ttsActiveCount = 0; // 当前正在播放的 TTS 句子数（服务端可能分多句发送）
+  bool _ttsSessionActive = false; // 当前整体 TTS 会话是否在进行（避免每句重复重置解码器）
   WebSocketChannel? _ws;
   bool _hasStartedCall = false;
   MessageListener? _messageListener;
@@ -723,7 +724,13 @@ class XiaozhiService {
             // 服务端在 sentence_start 之前先发 tts start（整体 TTS 会话开始）
             // 关键：每轮 TTS 会话开始都要重建 Opus 解码器并重置预缓冲，
             // 否则上一句尾帧的残留状态会让本句开头首帧失真（「前两个字不清晰」）。
-            AudioUtil.resetTtsSession();
+            // 仅第一句重置：若服务端对每句都发 tts start，重复重置会让每句重新
+            // 攒 200ms 预缓冲 → 句间出现停顿/卡顿（语音通话「有点卡卡」根因之一）。
+            // 用 _ttsSessionActive 防止一轮响应内重复重置。
+            if (!_ttsSessionActive) {
+              AudioUtil.resetTtsSession();
+              _ttsSessionActive = true;
+            }
             _isAssistantSpeaking = true;
             print('$TAG: TTS开始');
             _dispatchEvent(
@@ -743,6 +750,7 @@ class XiaozhiService {
             // true —— UI 永久显示"小智正在说话"且麦克风不回来。改为 stop 直接归零。
             final bool wasSpeaking = _isAssistantSpeaking;
             _ttsActiveCount = 0;
+            _ttsSessionActive = false;
             _isAssistantSpeaking = false;
             print('$TAG: TTS结束，重新聆听');
             if (wasSpeaking) {
