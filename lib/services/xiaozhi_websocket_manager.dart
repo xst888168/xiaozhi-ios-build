@@ -45,7 +45,7 @@ class XiaozhiWebSocketManager {
   static const String TAG = "XiaozhiWebSocket";
   static const int _reconnectBaseMs = 1500; // 首次重连延迟
   static const int _reconnectMaxMs = 30000; // 重连延迟上限
-  static const int _staleTimeoutMs = 15000; // 通话期间静默超过该时长判定掉线
+  static const int _staleTimeoutMs = 20000; // 通话期间静默超过该时长判定掉线（放宽到 20s，容忍用户较长独白）
 
   WebSocketChannel? _channel;
   String? _serverUrl;
@@ -297,6 +297,10 @@ class XiaozhiWebSocketManager {
     if (_channel != null && isConnected) {
       try {
         _channel!.sink.add(data);
+        // 客户端正在上传音频（如语音通话用户说话）：刷新最后数据时间，
+        // 避免静默掉线看门狗在「用户长段独白」期间误判掉线而掐断连接
+        //（表现为「一直说话都没用 / 偶尔断开 / 跳回已连接提示」）。
+        _lastDataTime = DateTime.now();
       } catch (e) {
         print('$TAG: 二进制数据发送失败: $e');
       }
