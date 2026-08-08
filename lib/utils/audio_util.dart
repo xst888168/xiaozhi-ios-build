@@ -29,6 +29,16 @@ class AudioUtil {
   // VAD 静音自动断句相关（仅聊天页点击即说模式启用）
   static bool vadEnabled = false; // 是否启用静音自动断句
 
+  /// 录音输入增益补偿（默认开）。
+  ///
+  /// iOS 在 playAndRecord + voiceChat 下会对麦克风输入做系统级降噪/自动增益，
+  /// 常把「正常音量的说话声」也一起压低，导致用户必须大喊才被识别。
+  /// 这里在 VAD 与 Opus 编码之前对 PCM 做固定抬升，把人声恢复到可被清晰识别的电平；
+  /// **环境音的「不发送」交给 VAD 的峰值相对阈值处理，而不是靠降噪把人声也削掉**——
+  /// 既不会把环境音误识别成人声，也不会压低你正常的说话声。
+  /// 高响度样本（已接近上限，说明你本就很大声）不再放大，避免爆音失真。
+  static double inputGain = 2.2;
+
   /// 静音判定的最低 RMS 阈值（PCM16 有符号，理论范围 0~32768）。
   /// 实际阈值 = max(minSilenceRms, 噪声底 × noiseMultiplier)，以适应嘈杂环境。
   static double minSilenceRms = 350.0;
@@ -37,9 +47,9 @@ class AudioUtil {
   static double noiseMultiplier = 2.2;
 
   /// 连续静音达到该时长则自动断句（毫秒），可在设置中调整（400~3000）。
-  /// 默认 700ms：说完话停顿 0.7 秒即自动发送，减少"等半天才回"的延迟感；
+  /// 默认 600ms：说完话停顿 0.6 秒即自动发送，减少"等半天才回"的延迟感；
   /// 设太短会在正常停顿（如思考措辞）时误断句（抢话），可在设置里调长。
-  static int silenceTimeoutMs = 700;
+  static int silenceTimeoutMs = 600;
 
   /// 最短录音时长，避免刚点开就误断句。
   /// 必须 <= MIN(silenceTimeoutMs 下限 1000ms)。
@@ -560,8 +570,11 @@ class AudioUtil {
         stream.listen(
           (data) async {
             if (data.isNotEmpty && data.length % 2 == 0) {
-              _updateVad(data);
-              final opusData = await encodeToOpus(data);
+              // 先对输入 PCM 做增益补偿（抵消 iOS 把人声压低的效果），
+              // 再交给 VAD 与编码——两者必须吃到同一份已抬升的音频。
+              final pcm = _applyInputGain(data);
+              _updateVad(pcm);
+              final opusData = await encodeToOpus(pcm);
               if (opusData != null) {
                 _audioStreamController.add(opusData);
               }
@@ -668,6 +681,28 @@ class AudioUtil {
       _isRecording = false;
       return null;
     }
+  }
+
+  /// 对单帧 Int16 PCM16（little-endian, 单声道）做输入增益补偿。
+  ///
+  /// 只在 [inputGain] != 1.0 时真正处理；样本已接近上限（用户本就很大声）时不放大，
+  /// 防止爆音失真。结果 clamp 到 int16 范围。
+  static Uint8List _applyInputGain(Uint8List pcm) {
+    if (inputGain == 1.0) return pcm;
+    final inBd = ByteData.sublistView(pcm);
+    final outBd = ByteData(pcm.length);
+    for (int i = 0; i < pcm.length; i += 2) {
+      final int s = inBd.getInt16(i, Endian.little);
+      final double g = (s.abs() > 30000) ? 1.0 : inputGain;
+      int v = (s * g).round();
+      if (v > 32767) {
+        v = 32767;
+      } else if (v < -32768) {
+        v = -32768;
+      }
+      outBd.setInt16(i, v, Endian.little);
+    }
+    return outBd.buffer.asUint8List();
   }
 
   /// 根据 PCM16 数据更新 VAD 静音计时（连续静音由 _silenceTimer 判定断句）
