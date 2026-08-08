@@ -274,8 +274,16 @@ class AudioUtil {
   static bool? _iosSessionSpeaker;
 
   /// 按当前 [_callMode] 断言 iOS 音频会话。已是目标路由时直接跳过（除非 force）。
+  ///
+  /// 关键修复（语音通话「说完一句就录不进音 / 一直卡在已连接」根因）：
+  /// 录音器运行中(_isRecording)时**绝不重配会话**。iOS 的 AVAudioSession 是全局的，
+  /// 在录音进行中切换 category/options 会直接打断正在运行的麦克风采集，导致录音器
+  /// 静默死亡——而 _isRecording 状态位仍是 true，下一轮 startRecording 只做「重装备」
+  /// 而不会真正重启录音，于是 VAD 永远收不到音频、静音检测永远不触发、再也说不出第二句。
+  /// 录音与播放在语音通话中共用 playAndRecord 类别，无需在两者间重配，故直接跳过即可。
   static Future<void> _applyIosSession({bool force = false}) async {
     if (!Platform.isIOS) return;
+    if (_isRecording) return; // 录音进行中：绝不重配会话，保护正在运行的麦克风
     final bool wantSpeaker = !_callMode;
     if (!force && _iosSessionSpeaker == wantSpeaker) return;
     try {
@@ -299,17 +307,30 @@ class AudioUtil {
   }
 
   /// 初始化音频播放器
+  ///
+  /// 关键修复（语音通话「有点卡卡」根因）：已存在可用播放器实例时**直接复用**，
+  /// 不再每句 TTS 重建 FlutterPcmPlayer + 重攒 200ms 预缓冲。重建会让每一句的
+  /// 开头都重新预热 AudioTrack，表现为句与句之间 200~280ms 的停顿/卡顿。
+  /// 仅当确实没有实例（冷启动 / 错误恢复）时才新建。
   static Future<void> initPlayer() async {
+    // 已存在可用播放器实例：直接复用，避免每句 TTS 重建播放器 + 重攒预缓冲 → 句间卡顿。
+    if (_pcmPlayer != null && _isPlayerInitialized) {
+      try {
+        if (!_pcmPlayer!.isPlaying) await _pcmPlayer!.play();
+      } catch (_) {}
+      return;
+    }
+
     // 确保任何旧播放器被释放
     await stopPlaying();
 
     try {
       print('$TAG: 使用简单方式初始化PCM播放器');
 
-      // iOS 必须显式配置并激活音频会话，否则 RawSoundPlayer(AVAudioEngine)
-      // 没有正确的 category/输出路由，会完全无声或仅路由到听筒（"对话没声音"）。
+      // iOS 断言会话路由（不 force —— 录音进行中 _applyIosSession 内部会跳过，
+      // 绝不重配会话打断录音器；类别本就相同，无需反复切换）。
       if (Platform.isIOS) {
-        await _applyIosSession(force: true);
+        await _applyIosSession();
       }
 
       // 创建新的播放器实例 - 完全按照官方示例的简单方式
@@ -333,13 +354,22 @@ class AudioUtil {
   /// 播放Opus音频数据
   static Future<void> playOpusData(Uint8List opusData) async {
     try {
-      // 播放前断言 iOS 路由（聊天=扬声器）。已是目标路由时是空操作，不影响流畅性。
+      // 播放前断言 iOS 路由（聊天=扬声器，通话亦扬声器）。录音进行中时
+      // _applyIosSession 内部会跳过，绝不重配会话 → 不打断正在运行的录音器
+      // （语音通话「说完一句录不进音」根因修复）。已是目标路由时本身也是空操作。
       await _applyIosSession();
       // 如果播放器未初始化，先初始化
       if (!_isPlayerInitialized || _pcmPlayer == null) {
         await initPlayer();
       }
       if (_pcmPlayer == null) return;
+
+      // 播放器被 stop 过（上轮打断/轮次切换）：先恢复播放再喂数据，避免 feed 变空操作
+      if (!_pcmPlayer!.isPlaying) {
+        try {
+          await _pcmPlayer!.play();
+        } catch (_) {}
+      }
 
       // 解码Opus数据
       final Int16List pcmData = _decoder.decode(input: opusData);
@@ -414,6 +444,13 @@ class AudioUtil {
   }
 
   /// 停止播放
+  ///
+  /// 关键修复（语音通话「有点卡卡」根因之一）：**保留播放器实例**，只停止当前播放
+  /// 以立即静音（打断/轮次衔接需要），但绝不销毁 FlutterPcmPlayer、也不把
+  /// _isPlayerInitialized 置否。否则每句 TTS 都会走到 initPlayer 重建播放器 +
+  /// 重攒 200ms 预缓冲，表现为句间停顿/卡顿。保留实例后，下一句 TTS 直接 play()+feed，
+  /// AVAudioEngine 持续运行、无需重新预热，轮次衔接平滑。
+  /// _prerollPrimed 保持 true：非重建场景下无需重攒预缓冲。
   static Future<void> stopPlaying() async {
     // 极短 TTS：预缓冲未达阈值时先把剩余喂入，避免整段丢失（可能略裁尾，可接受）。
     if (_prerollBuffer != null && _prerollBuffer!.isNotEmpty) {
@@ -429,10 +466,9 @@ class AudioUtil {
       } catch (e) {
         print('$TAG: 停止播放失败: $e');
       }
-      _pcmPlayer = null;
-      _isPlayerInitialized = false;
     }
-    _prerollPrimed = false;
+    // 关键：保留 _pcmPlayer 与 _isPlayerInitialized，下一句直接续播、不重建。
+    _isPlaying = false;
     _playbackLevel = 0.0;
   }
 
@@ -440,10 +476,18 @@ class AudioUtil {
   static Future<void> dispose() async {
     _silenceTimer?.cancel();
     await stopPlaying();
+    // 真正销毁播放器实例（仅全量释放时），避免泄漏
+    if (_pcmPlayer != null) {
+      try {
+        await _pcmPlayer!.release();
+      } catch (_) {}
+      _pcmPlayer = null;
+    }
     _isRecording = false;
     _isPlaying = false;
     _isRecorderInitialized = false;
     _isPlayerInitialized = false;
+    _prerollPrimed = false;
     await _audioStreamController.close();
     print('$TAG: 资源已释放');
   }
